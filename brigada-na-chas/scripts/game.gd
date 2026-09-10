@@ -3,6 +3,20 @@ const Art = preload("res://scripts/apartment.gd")
 const Worker = preload("res://scripts/worker.gd")
 const Voice = preload("res://scripts/voice.gd")
 const PORT = 27840
+const Rules = preload("res://scripts/repair_rules.gd")
+const Interface = preload("res://scripts/game_ui.gd")
+const Options = preload("res://scripts/options.gd")
+var settings: Dictionary = {}
+var ui: CanvasLayer
+var sessions: Dictionary = {}
+var action_rates: Dictionary = {}
+var notices = ""
+var notice_until = 0
+var screenshot_kind = ""
+var restart_confirmation = false
+var closing_repair = false
+var repair_test_requested = false
+var repair_test_actions = 0
 var workers: Dictionary = {}
 var props: Dictionary = {}
 var holding: Dictionary = {}
@@ -33,6 +47,7 @@ var test_sent_voice = false
 var test_changed = false
 
 func _ready() -> void:
+	settings = Options.load_settings()
 	world = Art.build(self)
 	make_prop("cabinet",Vector3(2,1,2),Vector3(1.5,1.1,0.5),Color("658f84"),18)
 	make_prop("paint_can",Vector3(-4.5,1.15,3),Vector3(0.45,0.45,0.45),Color("d7b663"),2)
@@ -42,6 +57,7 @@ func _ready() -> void:
 	voice = Voice.new()
 	add_child(voice)
 	voice.packet_ready.connect(send_voice)
+	apply_settings(false)
 	multiplayer.peer_connected.connect(peer_connected)
 	multiplayer.peer_disconnected.connect(peer_left)
 	multiplayer.connected_to_server.connect(connected)
@@ -49,12 +65,20 @@ func _ready() -> void:
 	multiplayer.server_disconnected.connect(func(): disconnect_game("Хост отключился. Комната закрыта."))
 	var args = OS.get_cmdline_user_args()
 	shot_mode = "--screenshot" in args
+	for arg in args:
+		if arg.begins_with("--capture="):
+			screenshot_kind=arg.trim_prefix("--capture=")
+			shot_mode=true
 	if shot_mode:
 		host_game()
 		yaw = 0.1
 		pitch = -0.12
+		if screenshot_kind=="room":
+			workers[1].position=Vector3(-1.2,0.05,5.8)
+			yaw=-0.48; pitch=-0.12
 	if "--test-host" in args or "--test-client" in args:
 		test_mode = true
+		ui.repair.set_process(false)
 		test_join = "--test-client" in args
 		if test_join:
 			join_game()
@@ -69,7 +93,7 @@ func make_prop(id: String, pos: Vector3, size: Vector3, color: Color, mass: floa
 	body.continuous_cd = true
 	add_child(body)
 	body.position = pos
-	Art.box(body,Vector3.ZERO,size,color,false)
+	Art.prop_visual(body,id)
 	var col = CollisionShape3D.new()
 	var shape = BoxShape3D.new()
 	shape.size = size
@@ -78,79 +102,60 @@ func make_prop(id: String, pos: Vector3, size: Vector3, color: Color, mass: floa
 	props[id] = body
 
 func make_ui() -> void:
-	var layer = CanvasLayer.new()
-	add_child(layer)
-	var root = Control.new()
-	root.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
-	root.mouse_filter = Control.MOUSE_FILTER_IGNORE
-	layer.add_child(root)
-	status = Label.new()
-	status.position = Vector2(28,20)
-	status.add_theme_font_size_override("font_size",22)
-	status.add_theme_color_override("font_outline_color",Color("182b32"))
-	status.add_theme_constant_override("outline_size",8)
-	root.add_child(status)
-	hint = Label.new()
-	hint.set_anchors_and_offsets_preset(Control.PRESET_CENTER_BOTTOM)
-	hint.position = Vector2(-440,-90)
-	hint.size = Vector2(880,70)
-	hint.horizontal_alignment = HORIZONTAL_ALIGNMENT_CENTER
-	hint.add_theme_font_size_override("font_size",20)
-	hint.add_theme_color_override("font_outline_color",Color("182b32"))
-	hint.add_theme_constant_override("outline_size",8)
-	root.add_child(hint)
-	var cross = Label.new()
-	cross.text = "·"
-	cross.add_theme_font_size_override("font_size",36)
-	cross.set_anchors_and_offsets_preset(Control.PRESET_CENTER)
-	root.add_child(cross)
-	menu = PanelContainer.new()
-	menu.position = Vector2(380,120)
-	menu.custom_minimum_size = Vector2(520,470)
-	var style = StyleBoxFlat.new()
-	style.bg_color = Color("20363df5")
-	style.set_corner_radius_all(14)
-	style.content_margin_left = 30
-	style.content_margin_right = 30
-	style.content_margin_top = 24
-	style.content_margin_bottom = 24
-	menu.add_theme_stylebox_override("panel",style)
-	root.add_child(menu)
-	var column = VBoxContainer.new()
-	column.add_theme_constant_override("separation",12)
-	menu.add_child(column)
-	var title = Label.new()
-	title.text = "БРИГАДА НА ЧАС"
-	title.add_theme_font_size_override("font_size",30)
-	column.add_child(title)
-	info = Label.new()
-	info.text = "Квартира № 14 / кооператив на 1–4 игроков\nРанний прототип · локальная сеть / прямой IP"
-	info.autowrap_mode = TextServer.AUTOWRAP_WORD_SMART
-	column.add_child(info)
-	address = LineEdit.new()
-	address.text = "127.0.0.1"
-	address.placeholder_text = "IP компьютера-хоста"
-	column.add_child(address)
-	button(column,"Создать комнату",host_game)
-	button(column,"Подключиться",join_game)
-	button(column,"Продолжить",func():
-		if active:
-			menu.hide()
-			Input.mouse_mode = Input.MOUSE_MODE_CAPTURED)
-	mic_enabled = CheckBox.new()
-	mic_enabled.text = "Включить микрофон · говорить по V"
-	mic_enabled.toggled.connect(func(on):
-		if on:
-			voice.start_input())
-	column.add_child(mic_enabled)
-	button(column,"Выйти",func(): get_tree().quit())
+	ui=Interface.new()
+	add_child(ui)
+	ui.setup(self)
+	menu=ui.menu
+	address=ui.address
+	info=ui.info
+	status=ui.status
+	hint=ui.hint
+	mic_enabled=ui.mic
 
-func button(parent: Control, text: String, callback: Callable) -> void:
-	var b = Button.new()
-	b.text = text
-	b.custom_minimum_size.y = 38
-	b.pressed.connect(callback)
-	parent.add_child(b)
+func apply_settings(save: bool=true) -> void:
+	get_viewport().msaa_3d=int(settings.msaa)
+	world.environment.ambient_light_energy=settings.brightness
+	world.dust.emitting=settings.effects
+	for light in world.lights: light.shadow_enabled=settings.shadows
+	for worker in workers.values(): worker.camera.fov=settings.fov
+	AudioServer.set_bus_volume_db(0,linear_to_db(maxf(0.0001,settings.volume)))
+	if DisplayServer.get_name()!="headless":
+		DisplayServer.window_set_mode(DisplayServer.WINDOW_MODE_FULLSCREEN if settings.fullscreen else DisplayServer.WINDOW_MODE_WINDOWED)
+	if save: Options.save_settings(settings)
+
+func resume_game() -> void:
+	if active:
+		menu.hide()
+		Input.mouse_mode=Input.MOUSE_MODE_CAPTURED
+
+func request_restart() -> void:
+	if not active or not multiplayer.is_server():
+		info.text="Новый заказ может начать только хост."
+		return
+	if not restart_confirmation:
+		restart_confirmation=true
+		info.text="Сбросить текущий ремонт? Нажми «Новый заказ» ещё раз."
+		return
+	restart_confirmation=false
+	reset_order.rpc()
+	resume_game()
+
+@rpc("authority","call_local","reliable")
+func reset_order() -> void:
+	sessions.clear()
+	holding.clear()
+	task={"valve":false,"pipe":0.0,"paint":0.0,"mount":false,"water":0.0,"time":0.0}
+	var starts={"cabinet":Vector3(2,1,2),"paint_can":Vector3(-4.5,1.15,3),"toolbox":Vector3(-5.5,1.1,3),"plank":Vector3(0,0.5,2)}
+	for key in props:
+		props[key].freeze=not multiplayer.is_server()
+		props[key].position=starts[key]
+		props[key].rotation=Vector3.ZERO
+		props[key].linear_velocity=Vector3.ZERO
+		props[key].angular_velocity=Vector3.ZERO
+	ui.repair.hide()
+	for id in workers:
+		workers[id].position=Vector3(0,0.15,4)
+		workers[id].target=workers[id].position
 
 func host_game() -> void:
 	if active:
@@ -213,6 +218,7 @@ func spawn(id: int, pos: Vector3) -> void:
 	p.position = pos
 	p.target = pos
 	p.setup(id,local_id)
+	p.camera.fov=settings.fov
 	workers[id] = p
 	peak_peers = maxi(peak_peers,workers.size())
 	last_input[id] = Time.get_ticks_msec()
@@ -226,6 +232,8 @@ func despawn(id: int) -> void:
 	remove_worker(id)
 
 func remove_worker(id: int) -> void:
+	sessions.erase(id)
+	action_rates.erase(id)
 	if workers.has(id):
 		workers[id].queue_free()
 		workers.erase(id)
@@ -238,6 +246,9 @@ func remove_worker(id: int) -> void:
 
 func disconnect_game(reason: String) -> void:
 	active = false
+	voice.talking=false
+	sessions.clear()
+	ui.repair.hide()
 	multiplayer.multiplayer_peer = OfflineMultiplayerPeer.new()
 	for id in workers.keys():
 		peer_left(id)
@@ -247,20 +258,23 @@ func disconnect_game(reason: String) -> void:
 	info.text = reason
 	Input.mouse_mode = Input.MOUSE_MODE_VISIBLE
 
-func _unhandled_input(event: InputEvent) -> void:
+func _input(event: InputEvent) -> void:
 	if event is InputEventKey and event.pressed and not event.echo:
 		if event.physical_keycode == KEY_ESCAPE:
 			menu.visible = not menu.visible
 			Input.mouse_mode = Input.MOUSE_MODE_VISIBLE if menu.visible else Input.MOUSE_MODE_CAPTURED
-		if active and not menu.visible:
+		if active and not menu.visible and not ui.repair.visible:
+			if event.physical_keycode == KEY_E:
+				if multiplayer.is_server(): begin_repair(local_id)
+				else: request_repair.rpc_id(1)
 			if event.physical_keycode == KEY_F:
 				if multiplayer.is_server():
 					interact(local_id)
 				else:
 					request_interact.rpc_id(1)
 	if event is InputEventMouseMotion and Input.mouse_mode == Input.MOUSE_MODE_CAPTURED:
-		yaw -= event.relative.x*0.0022
-		pitch = clampf(pitch-event.relative.y*0.0022,-1.4,1.4)
+		yaw -= event.relative.x*0.0022*settings.sensitivity
+		pitch = clampf(pitch-event.relative.y*0.0022*settings.sensitivity,-1.4,1.4)
 
 @rpc("any_peer","call_remote","unreliable_ordered",1)
 func input_state(move: Vector2, angles: Vector2, jump: bool, use: bool) -> void:
@@ -271,9 +285,9 @@ func accept_input(id: int, move: Vector2, angles: Vector2, jump: bool, use: bool
 	if not workers.has(id) or not move.is_finite() or not angles.is_finite():
 		return
 	var p = workers[id]
-	p.move_input = move.limit_length(1)
+	p.move_input = Vector2.ZERO if sessions.has(id) else move.limit_length(1)
 	p.look = Vector2(wrapf(angles.x,-PI,PI),clampf(angles.y,-1.4,1.4))
-	p.jump = p.jump or jump
+	p.jump = (p.jump or jump) and not sessions.has(id)
 	last_input[id] = Time.get_ticks_msec()
 	p.set_meta("use",use)
 
@@ -299,8 +313,8 @@ func interact(id: int) -> void:
 	if now < next_action.get(id,0):
 		return
 	next_action[id] = now+300
-	if nearest_station(id) == "valve":
-		task.valve = not task.valve
+	if nearest_station(id) == "valve" and not holding.has(id):
+		begin_repair(id)
 		return
 	if holding.has(id):
 		holding.erase(id)
@@ -323,10 +337,10 @@ func _physics_process(dt: float) -> void:
 	var move = Vector2.ZERO
 	var jump = false
 	var use = false
-	if not menu.visible and not test_mode:
+	if not menu.visible and not ui.repair.visible and not test_mode:
 		move = Vector2(float(Input.is_physical_key_pressed(KEY_D))-float(Input.is_physical_key_pressed(KEY_A)),float(Input.is_physical_key_pressed(KEY_S))-float(Input.is_physical_key_pressed(KEY_W))).limit_length(1)
 		jump = Input.is_physical_key_pressed(KEY_SPACE)
-		use = Input.is_physical_key_pressed(KEY_E)
+		use = false
 	if test_mode and test_join:
 		move = Vector2(0,0.3) if report_timer < 1.0 else Vector2.ZERO
 	if multiplayer.is_server():
@@ -354,26 +368,42 @@ func _physics_process(dt: float) -> void:
 			var objects = {}
 			for key in props:
 				objects[key] = props[key].transform
-			snapshot.rpc(poses,objects,task,holding)
+			snapshot.rpc(poses,objects,task,holding,sessions)
 	voice.talking = mic_enabled.button_pressed and not menu.visible and Input.is_physical_key_pressed(KEY_V)
 	update_hud()
 	if shot_mode:
 		report_timer += dt
 		if report_timer > 2:
 			shot_mode = false
+			if screenshot_kind in ["valve","pipe","paint","mount"]:
+				ui.repair.open(Rules.create(screenshot_kind,18))
+			elif screenshot_kind=="settings":
+				menu.show(); ui.tabs.current_tab=1
+			set_physics_process(false)
 			capture_screen.call_deferred()
 	if test_mode:
 		report_timer += dt
 		if not test_join and report_timer>2.0 and not test_changed:
 			test_changed = true
 			task.pipe = 0.5
+			for peer_id in workers:
+				if peer_id!=1: workers[peer_id].position=Vector3(-6,0.1,-5)
+		if test_join and report_timer>2.5 and not repair_test_requested:
+			repair_test_requested=true
+			request_repair.rpc_id(1)
+		if test_join and sessions.has(local_id):
+			var repair=sessions[local_id]
+			request_repair_action.rpc_id(1,"turn",clampf((repair.target-repair.pressure)*8,-1,1))
+			if absf(repair.pressure-repair.target)<0.08:
+				request_repair_action.rpc_id(1,"confirm",0.0)
+			repair_test_actions+=1
 		if test_join and report_timer>3 and report_timer<4:
 			test_sent_voice = true
 			var data = PackedByteArray()
 			data.resize(640)
 			uplink_voice.rpc_id(1,data)
 		if report_timer > (10.0 if not test_join else 6.0):
-			print("TEST_RESULT peers=",workers.size()," peak=",peak_peers," voice=",voice_packets," pipe=",task.pipe," pos=",workers.get(local_id).position if workers.has(local_id) else Vector3.ZERO)
+			print("TEST_RESULT peers=",workers.size()," peak=",peak_peers," voice=",voice_packets," pipe=",task.pipe," valve=",task.valve," repair_actions=",repair_test_actions," pos=",workers.get(local_id).position if workers.has(local_id) else Vector3.ZERO)
 			get_tree().quit()
 
 func server_tasks(dt: float) -> void:
@@ -400,29 +430,31 @@ func server_tasks(dt: float) -> void:
 		target /= carriers.size()
 		body.linear_velocity = ((target-body.position)*8).limit_length(9)
 		body.angular_velocity *= 0.8
-	for id in workers:
-		if not workers[id].get_meta("use",false):
+	for id in sessions.keys():
+		if not workers.has(id) or workers[id].position.distance_to(world.spots[sessions[id].kind]-Vector3.UP)>3.2:
+			sessions.erase(id)
 			continue
-		var station = nearest_station(id)
-		if station == "pipe" and task.valve:
-			task.pipe = minf(task.pipe+dt*0.17,1)
-		if station == "paint":
-			task.paint = minf(task.paint+dt*0.10,1)
-		if station == "mount" and props.cabinet.position.distance_to(world.spots.mount)<2.2:
-			task.mount = true
-			for owner in holding.keys():
-				if holding[owner] == "cabinet":
-					holding.erase(owner)
-			props.cabinet.freeze = true
-			props.cabinet.position = world.spots.mount+Vector3(0,0,0.15)
-			props.cabinet.rotation = Vector3.ZERO
+		var repair=sessions[id]
+		# A mounted cabinet must stay nearby until all screws are secure.
+		if repair.kind=="mount" and props.cabinet.position.distance_to(world.spots.mount)>2.2:
+			notify_player(id,"Шкаф унесли от крепления. Верните его и начните заново.")
+			sessions.erase(id)
+			continue
+		Rules.advance(repair,dt)
+		if repair.kind=="paint": task.paint=float(repair.quality)/40.0*0.99
+		if repair.kind=="pipe" and repair.phase==1: task.pipe=0.5+float(repair.round)/3.0*0.49
+		if repair.done:
+			finish_repair(repair.kind)
+			sessions.erase(id)
+
 
 @rpc("authority","call_remote","unreliable_ordered",1)
-func snapshot(poses: Dictionary, objects: Dictionary, tasks: Dictionary, held: Dictionary) -> void:
+func snapshot(poses: Dictionary, objects: Dictionary, tasks: Dictionary, held: Dictionary, repairs: Dictionary) -> void:
 	for id in workers.keys():
 		if not poses.has(id):
 			remove_worker(id)
 	for id in poses:
+		if not workers.has(id): spawn(id,poses[id][0])
 		if workers.has(id):
 			workers[id].target = poses[id][0]
 			if id != local_id:
@@ -432,28 +464,111 @@ func snapshot(poses: Dictionary, objects: Dictionary, tasks: Dictionary, held: D
 			props[key].transform = objects[key]
 	task = tasks
 	holding = held
+	sessions = repairs
+	if not repairs.has(local_id): closing_repair=false
 
 func update_hud() -> void:
-	var done = int(task.pipe>=1)+int(task.paint>=1)+int(task.mount)
-	status.text = "БРИГАДА НА ЧАС  /  КВАРТИРА №14\nМастеров: %d/4   •   Работа: %d/3\nТруба %d%%   |   Стена %d%%   |   Шкаф %s\nВода: %d%%   •   %s" % [workers.size(),done,int(task.pipe*100),int(task.paint*100),"✓" if task.mount else "—",int(task.water*100),"МИКРОФОН: V" if mic_enabled.button_pressed else "Микрофон выключен"]
-	if done == 3:
-		status.text += "\nЗАКАЗ ВЫПОЛНЕН!  Время: %d сек." % int(task.time)
-	var context = ""
+	var done=int(task.pipe>=1)+int(task.paint>=1)+int(task.mount)
+	status.text="КВАРТИРА 14   /   ЗАКАЗ %d/3   /   МАСТЕРОВ %d/4" % [done,workers.size()]
+	if settings.details:
+		status.text+="\nТруба %d%%  ·  Стена %d%%  ·  Шкаф %s  ·  Вода %d%%" % [int(task.pipe*100),int(task.paint*100),"готов" if task.mount else "не закреплён",int(task.water*100)]
+	if done==3: status.text+="\nЗаказ выполнен за %d сек. Новый заказ — в меню Esc." % int(task.time)
+	var context=""
 	if workers.has(local_id):
-		var station = nearest_station(local_id)
-		match station:
-			"valve": context = "F — %s вентиль" % ("открыть" if task.valve else "закрыть")
-			"pipe": context = "Удерживай E — чинить трубу" if task.valve else "Сначала закрой красный вентиль (F)"
-			"paint": context = "Удерживай E — красить стену"
-			"mount": context = "Принеси шкаф и удерживай E — закрепить"
+		var station=nearest_station(local_id)
+		var descriptions={"valve":"E — перекрыть воду / контроль давления","pipe":"E — собрать трубу и затянуть муфты","paint":"E — покраска валиком","mount":"E — уровень и крепление шкафа"}
+		context=descriptions.get(station,"")
 		if holding.has(local_id):
-			context += "  •  Несёшь %s / F — отпустить" % holding[local_id]
-			if holding[local_id] == "cabinet" and workers.size()>1:
-				context += " · Нужны двое (F у шкафа)"
-	hint.text = context+"\nWASD — ходить  •  Пробел — прыжок  •  F — взять  •  V — голос  •  Esc — меню"
-	world.water.scale = Vector3(1+task.water*12,1,1+task.water*8)
-	var mesh: MeshInstance3D = world.paint.get_child(0)
-	mesh.material_override.albedo_color = Color("977a65").lerp(Color("79aea1"),task.paint)
+			var names={"cabinet":"шкаф","paint_can":"краска","toolbox":"ящик инструментов","plank":"доска"}
+			context+="  ·  F — отпустить: "+names[holding[local_id]]
+			if holding[local_id]=="cabinet" and workers.size()>1: context+=" (нести вдвоём)"
+	if Time.get_ticks_msec()<notice_until: context=notices
+	hint.text=context+"\nWASD — ходить  ·  F — взять  ·  E — работа  ·  V — голос  ·  Esc — настройки"
+	world.water.scale=Vector3(1+task.water*12,1,1+task.water*8)
+	world.valve.rotation.z=PI*0.5 if task.valve else 0.0
+	var mesh: MeshInstance3D=world.paint.get_child(0)
+	mesh.material_override.albedo_color=Color("a18d70").lerp(Color("79aea1"),task.paint)
+	if sessions.has(local_id) and not closing_repair:
+		if not ui.repair.visible: ui.repair.open(sessions[local_id])
+		else: ui.repair.state=sessions[local_id].duplicate(true)
+	elif ui.repair.visible:
+		ui.repair.hide()
+		if not menu.visible: Input.mouse_mode=Input.MOUSE_MODE_CAPTURED
+
+@rpc("any_peer","call_remote","reliable")
+func request_repair() -> void:
+	if multiplayer.is_server(): begin_repair(multiplayer.get_remote_sender_id())
+
+func begin_repair(id: int) -> void:
+	if not workers.has(id) or sessions.has(id): return
+	var kind=nearest_station(id)
+	if kind=="": return
+	if (kind=="valve" and task.valve) or (kind=="pipe" and task.pipe>=1) or (kind=="paint" and task.paint>=1) or (kind=="mount" and task.mount):
+		notify_player(id,"Эта работа уже выполнена."); return
+	for repair in sessions.values():
+		if repair.kind==kind:
+			notify_player(id,"Здесь уже работает другой мастер."); return
+	if kind=="pipe" and not task.valve:
+		notify_player(id,"Сначала перекрой воду на красном вентиле."); return
+	if kind=="mount" and props.cabinet.position.distance_to(world.spots.mount)>2.2:
+		notify_player(id,"Сначала принесите шкаф к креплению на стене."); return
+	if kind=="pipe": task.pipe=0.0
+	if kind=="paint": task.paint=0.0
+	sessions[id]=Rules.create(kind,randi())
+	workers[id].move_input=Vector2.ZERO
+
+func finish_repair(kind: String) -> void:
+	match kind:
+		"valve": task.valve=true
+		"pipe": task.pipe=1.0
+		"paint": task.paint=1.0
+		"mount":
+			task.mount=true
+			for owner in holding.keys():
+				if holding[owner]=="cabinet": holding.erase(owner)
+			props.cabinet.freeze=true
+			props.cabinet.position=world.spots.mount+Vector3(0,0,0.15)
+			props.cabinet.rotation=Vector3.ZERO
+
+func local_repair_action(command: String,value: float) -> void:
+	if not active: return
+	if multiplayer.is_server(): repair_action(local_id,command,value)
+	else: request_repair_action.rpc_id(1,command,value)
+
+@rpc("any_peer","call_remote","reliable")
+func request_repair_action(command: String,value: float) -> void:
+	if multiplayer.is_server(): repair_action(multiplayer.get_remote_sender_id(),command,value)
+
+func repair_action(id: int,command: String,value: float) -> void:
+	if not sessions.has(id): return
+	var now=Time.get_ticks_msec()
+	var rate=action_rates.get(id,{"start":now,"count":0})
+	if now-rate.start>1000: rate={"start":now,"count":0}
+	rate.count+=1; action_rates[id]=rate
+	if rate.count>130: return
+	Rules.action(sessions[id],command,value)
+
+func cancel_local_repair() -> void:
+	if multiplayer.is_server(): sessions.erase(local_id)
+	else:
+		closing_repair=true
+		cancel_repair.rpc_id(1)
+		sessions.erase(local_id)
+	ui.repair.hide()
+	Input.mouse_mode=Input.MOUSE_MODE_CAPTURED
+
+@rpc("any_peer","call_remote","reliable")
+func cancel_repair() -> void:
+	if multiplayer.is_server(): sessions.erase(multiplayer.get_remote_sender_id())
+
+func notify_player(id: int,text: String) -> void:
+	if id==local_id: show_notice(text)
+	elif id in multiplayer.get_peers(): show_notice.rpc_id(id,text)
+
+@rpc("authority","call_remote","reliable")
+func show_notice(text: String) -> void:
+	notices=text; notice_until=Time.get_ticks_msec()+4000
+
 
 func send_voice(data: PackedByteArray) -> void:
 	if not active:
@@ -486,6 +601,15 @@ func play_voice(id: int, data: PackedByteArray) -> void:
 
 func capture_screen() -> void:
 	await RenderingServer.frame_post_draw
-	get_viewport().get_texture().get_image().save_png("user://preview.png")
+	get_viewport().get_texture().get_image().save_png("user://preview"+("-"+screenshot_kind if screenshot_kind!="" else "")+".png")
 	print("SCREENSHOT ",ProjectSettings.globalize_path("user://preview.png"))
 	get_tree().quit()
+
+
+func _notification(what: int) -> void:
+	if what==NOTIFICATION_APPLICATION_FOCUS_OUT and active and not test_mode and not shot_mode and screenshot_kind=="":
+		if ui.repair.visible: cancel_local_repair()
+		menu.show()
+		voice.talking=false
+		Input.mouse_mode=Input.MOUSE_MODE_VISIBLE
+
