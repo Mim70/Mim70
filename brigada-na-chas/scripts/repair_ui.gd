@@ -44,6 +44,18 @@ func local_mouse() -> Vector2:
 
 func _input(event: InputEvent) -> void:
 	if not visible: return
+	if state.kind=="chandelier":
+		if event is InputEventKey and event.pressed:
+			if event.physical_keycode in [KEY_1,KEY_2,KEY_3]: action_sent.emit("bulb",event.physical_keycode-KEY_1)
+		if event is InputEventMouseButton and event.pressed:
+			if event.button_index==MOUSE_BUTTON_WHEEL_UP: action_sent.emit("screw",1)
+			if event.button_index==MOUSE_BUTTON_LEFT:
+				var at=local_mouse()
+				var hit_id=-1
+				for note in state.notes:
+					var center=Vector2(145+note.lane*105,170+note.age/0.9*260)
+					if not note.hit and center.distance_to(at)<38: hit_id=note.id; break
+				action_sent.emit("hit",hit_id)
 	if event is InputEventKey and not event.echo:
 		if event.physical_keycode==KEY_ESCAPE and event.pressed:
 			cancelled.emit(); get_viewport().set_input_as_handled(); return
@@ -55,6 +67,10 @@ func _input(event: InputEvent) -> void:
 		if event.physical_keycode==KEY_R and event.pressed: action_sent.emit("reload",0)
 	if event is InputEventMouseButton and event.pressed and event.button_index==MOUSE_BUTTON_LEFT:
 		var at=local_mouse()
+		if state.kind=="electric":
+			if state.phase==0 and Rect2(270,190,420,220).has_point(at): action_sent.emit("flip",float(int((at.y-190)/110)*3+int((at.x-270)/140)))
+			if state.phase==1 and Rect2(220,280,520,110).has_point(at): action_sent.emit("probe",float(int((at.x-220)/130)))
+		if state.kind=="tea" and state.phase==0 and Rect2(200,260,560,130).has_point(at): action_sent.emit("ingredient",float(int((at.x-200)/140)))
 		if state.kind=="pipe" and state.phase==0:
 			if Rect2(310,160,320,320).has_point(at):
 				action_sent.emit("rotate",float(int((at.y-160)/80)*4+int((at.x-310)/80)))
@@ -75,19 +91,22 @@ func screw_position(i: int) -> Vector2:
 
 func _draw() -> void:
 	if state.is_empty(): return
-	draw_rect(Rect2(Vector2.ZERO,size),Color(0.025,0.05,0.06,0.80))
+	draw_rect(Rect2(Vector2.ZERO,size),Color(0.025,0.05,0.06,0.15 if state.kind=="chandelier" else 0.80))
 	var scale=scale_factor()
 	draw_set_transform((size-Vector2(960,600)*scale)/2,0,Vector2.ONE*scale)
-	draw_style_box(panel(Color("14282f")),Rect2(15,12,930,570))
-	var titles={"valve":"01 / ПЕРЕКРЫТЬ ВОДУ","pipe":"02 / СОБРАТЬ ТРУБОПРОВОД","paint":"03 / ПОКРАСИТЬ СТЕНУ","mount":"04 / ЗАКРЕПИТЬ ШКАФ"}
+	draw_style_box(panel(Color(0.078,0.157,0.184,0.83) if state.kind=="chandelier" else Color("14282f")),Rect2(15,12,930,570))
+	var titles={"chandelier":"07 / ЛЮСТРА: ДЕРЖИСЬ И КРУТИ","valve":"01 / ПЕРЕКРЫТЬ ВОДУ","pipe":"02 / СОБРАТЬ ТРУБОПРОВОД","paint":"03 / ПОКРАСИТЬ СТЕНУ","mount":"04 / ЗАКРЕПИТЬ ШКАФ","electric":"05 / ПОЧИНИТЬ ЩИТОК","tea":"06 / ЧАЙ ДЛЯ ХОЗЯЙКИ"}
 	text(Vector2(50,62),titles[state.kind],GOLD,27)
 	text(Vector2(50,98),"КВАРТИРА 14   /   МАСТЕРСКАЯ",MUTED,14)
 	text(Vector2(820,60),"ESC — выйти",MUTED,13)
 	match state.kind:
+		"chandelier": draw_chandelier()
 		"valve": draw_valve()
 		"pipe": draw_pipe()
 		"paint": draw_paint()
 		"mount": draw_mount()
+		"electric": draw_electric()
+		"tea": draw_tea()
 	text(Vector2(50,534),str(state.get("message","")),GOLD,17)
 	text(Vector2(50,560),"Ошибки: %d    •    Мир и остальные игроки продолжают работать" % state.errors,MUTED,14)
 	draw_set_transform(Vector2.ZERO)
@@ -117,11 +136,11 @@ func draw_torque() -> void:
 	var px=150+650*state.torque
 	draw_line(Vector2(px,287),Vector2(px,360),GOLD,5)
 	text(Vector2(150,415),"Момент: %d Н·м" % int(state.torque*50),GOLD,30)
-	text(Vector2(530,415),"Муфты: %d / 3" % state.round,MINT,24)
+	text(Vector2(480,415),"Этап 2/2 · Муфты: %d / 3" % state.round,MINT,24)
 
 func draw_pipe() -> void:
 	if state.phase==1: draw_torque(); return
-	text(Vector2(50,132),"Поворачивай секции мышью. Соедини вход с выходом, затем нажми пробел.",WHITE,17)
+	text(Vector2(50,132),"Соедини вход с выходом. Правильный маршрут засчитается автоматически.",WHITE,17)
 	text(Vector2(170,288),"ВХОД →",MINT,22); text(Vector2(650,368),"→ ВЫХОД",GOLD,22)
 	for i in 16:
 		var rect=Rect2(310+(i%4)*80,160+int(i/4)*80,76,76)
@@ -173,3 +192,64 @@ func draw_mount() -> void:
 		var px=300+345*state.torque
 		draw_line(Vector2(px,288),Vector2(px,338),GOLD,4)
 		text(Vector2(315,480),"Крепления: %d / 4" % state.screws.count(1.0),MINT,24)
+
+func draw_electric() -> void:
+	if state.phase==0:
+		text(Vector2(70,139),"Каждый тумблер меняет себя и соседей. Включи все шесть ламп.",WHITE,18)
+		for i in 6:
+			var rect=Rect2(270+(i%3)*140,190+int(i/3)*110,130,100)
+			draw_style_box(panel(Color("28434a")),rect)
+			draw_circle(rect.get_center()+Vector2(0,-17),15,MINT if state.fuses[i] else RED)
+			text(rect.position+Vector2(35,85),"ВКЛ" if state.fuses[i] else "ВЫКЛ",WHITE,18)
+	else:
+		text(Vector2(100,170),"Контрольные щупы: нажимай контакты в указанном порядке",WHITE,20)
+		text(Vector2(260,220),"3 → 1 → 4 → 2",GOLD,32)
+		for i in 4:
+			var rect=Rect2(220+i*130,280,120,100)
+			draw_style_box(panel(Color("3b5956")),rect)
+			text(rect.position+Vector2(45,65),str(i+1),GOLD,38)
+		text(Vector2(290,448),"Проверено: %d / 4" % state.round,MINT,24)
+
+func draw_tea() -> void:
+	var names=["ЗАВАРКА","САХАР","КИПЯТОК","ЛИМОН"]
+	if state.phase==0:
+		text(Vector2(75,153),"Бабушкин рецепт (порядок важен):",WHITE,22)
+		var recipe=""
+		for i in state.recipe: recipe+=names[i]+"  →  "
+		text(Vector2(75,199),recipe.trim_suffix("  →  "),GOLD,21)
+		for i in 4:
+			var rect=Rect2(200+i*140,260,130,130)
+			draw_style_box(panel(Color("3a524f")),rect)
+			draw_circle(rect.get_center()+Vector2(0,-15),25,[Color("776044"),WHITE,Color("8bb8bb"),GOLD][i])
+			text(rect.position+Vector2(12,110),names[i],WHITE,16)
+		text(Vector2(280,450),"Добавлено: %d / 4" % state.round,MINT,24)
+	else:
+		text(Vector2(95,180),"Чай заваривается. Пробел — снять в зелёной зоне.",WHITE,24)
+		bar(Rect2(150,290,650,42),1,Color("334b4d"))
+		draw_rect(Rect2(150+650*0.60,290,650*0.23,42),MINT)
+		var x=150+650*state.brew
+		draw_line(Vector2(x,275),Vector2(x,348),GOLD,5)
+		text(Vector2(115,425),"После заварки возьми чашку F и отнеси хозяйке.",GOLD,22)
+
+func draw_chandelier() -> void:
+	text(Vector2(50,127),"ЛКМ по кружкам НА ПОЛОСЕ • 1/2/3 — лампочка • колёсико вверх — вкручивать",WHITE,16)
+	for i in 3:
+		draw_line(Vector2(145+i*105,166),Vector2(145+i*105,474),Color("28464b"),3)
+	draw_rect(Rect2(100,387,305,86),Color(0.3,0.65,0.5,0.18))
+	draw_line(Vector2(100,430),Vector2(405,430),MINT,3)
+	for note in state.notes:
+		if not note.hit:
+			var at=Vector2(145+note.lane*105,170+note.age/0.9*260)
+			draw_circle(at,23,GOLD if absf(note.age-0.9)<0.15 else WHITE)
+			draw_arc(at,30,0,TAU,32,MINT,2,true)
+	for i in 3:
+		var at=Vector2(535+i*125,265)
+		draw_circle(at,34,GOLD if state.bulbs[i]>=1 else Color("63706a"))
+		if state.selected==i: draw_arc(at,43,0,TAU,32,MINT,3,true)
+		text(at+Vector2(-9,8),str(i+1),WHITE,25)
+		bar(Rect2(at.x-43,323,86,12),state.bulbs[i],MINT)
+	text(Vector2(490,380),"Крути колёсико, продолжая ловить кружки",WHITE,16)
+	text(Vector2(490,413),"Попадания: %d / 18" % state.score,MINT,22)
+	bar(Rect2(490,449,355,18),state.wobble,RED)
+	text(Vector2(490,492),"Друг держит лестницу" if state.supported else "Раскачка — при заполнении упадёшь",GOLD,16)
+	if state.climb<1: text(Vector2(110,260),"Поднимаемся…",GOLD,28)

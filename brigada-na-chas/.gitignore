@@ -2,3 +2,6 @@
 build/
 *.tmp
 *.log
+*.import
+photos/*.png
+docs/screenshots/v03-photo.png

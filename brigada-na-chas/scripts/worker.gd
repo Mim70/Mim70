@@ -1,5 +1,8 @@
 extends CharacterBody3D
 const Art = preload("res://scripts/apartment.gd")
+var ragdoll: Node3D
+var fallen_time=0.0
+var on_ladder=false
 var peer_id: int
 var camera: Camera3D
 var visual: Node3D
@@ -44,11 +47,18 @@ func setup(id: int, local_id: int) -> void:
 	visual.visible = not local_player
 
 func simulate(dt: float) -> void:
+	if is_instance_valid(ragdoll):
+		fallen_time-=dt
+		if local_player: camera.global_position=ragdoll.parts[1].global_position+Vector3(0,0.3,0)
+		if fallen_time<=0: recover()
+		return
+	if on_ladder: return
 	rotation.y = look.x
 	camera.rotation.x = look.y
 	var direction = Basis(Vector3.UP,look.x) * Vector3(move_input.x,0,move_input.y)
-	velocity.x = move_toward(velocity.x,direction.x*4.4,24*dt)
-	velocity.z = move_toward(velocity.z,direction.z*4.4,24*dt)
+	var traction=5.0 if get_meta("slippery",false) else 24.0
+	velocity.x = move_toward(velocity.x,direction.x*4.4,traction*dt)
+	velocity.z = move_toward(velocity.z,direction.z*4.4,traction*dt)
 	if not is_on_floor():
 		velocity.y -= 20*dt
 	elif jump:
@@ -59,6 +69,22 @@ func simulate(dt: float) -> void:
 		position = Vector3(0,1,4)
 
 func smooth(dt: float) -> void:
+	if is_instance_valid(ragdoll):
+		if local_player: camera.global_position=ragdoll.parts[1].global_position+Vector3(0,0.3,0)
+		return
 	position = position.lerp(target,1-exp(-18*dt))
 	rotation.y = look.x
 	camera.rotation.x = look.y
+
+func fall(authoritative: bool=true) -> void:
+	if is_instance_valid(ragdoll): return
+	on_ladder=false; fallen_time=3.5; collision_layer=0; collision_mask=0; visual.hide()
+	ragdoll=preload("res://scripts/ragdoll.gd").new(); get_parent().add_child(ragdoll); ragdoll.setup(position,authoritative)
+func recover() -> void:
+	if is_instance_valid(ragdoll): ragdoll.queue_free()
+	ragdoll=null; fallen_time=0; on_ladder=false
+	position=Vector3(-0.4,0.1,1.4); target=position; velocity=Vector3.ZERO
+	collision_layer=2; collision_mask=1; camera.position=Vector3(0,1.65,0); camera.rotation=Vector3.ZERO
+	visual.visible=not local_player
+func _exit_tree() -> void:
+	if is_instance_valid(ragdoll): ragdoll.queue_free()

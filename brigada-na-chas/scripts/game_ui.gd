@@ -10,6 +10,7 @@ var mic: CheckBox
 var tabs: TabContainer
 var repair: Control
 var cross: Label
+var granny_dialog: Control
 const RepairUI=preload("res://scripts/repair_ui.gd")
 
 func label(text: String, font_size: int=18) -> Label:
@@ -60,13 +61,18 @@ func setup(owner_game: Node) -> void:
 	menu.add_theme_stylebox_override("panel",style(Color("10252cf5"),24))
 	var column=VBoxContainer.new(); menu.add_child(column); column.add_theme_constant_override("separation",14)
 	column.add_child(label("БРИГАДА НА ЧАС",30))
-	column.add_child(label("КВАРТИРА 14  /  МАСТЕРСКАЯ  /  v0.2",13))
+	column.add_child(label("БРИГАДА  /  ТРИ АДРЕСА  /  v0.3",13))
 	tabs=TabContainer.new(); column.add_child(tabs); tabs.size_flags_vertical=Control.SIZE_EXPAND_FILL
 	var room=section("Комната")
 	info=label("1–4 игрока · прямое подключение по IP",16); info.autowrap_mode=TextServer.AUTOWRAP_WORD_SMART; room.add_child(info)
 	address=LineEdit.new(); address.text="127.0.0.1"; address.placeholder_text="IP компьютера-хоста"; room.add_child(address)
 	action(room,"Создать комнату",game.host_game)
 	action(room,"Подключиться",game.join_game)
+	var level_row=HBoxContainer.new(); room.add_child(level_row)
+	var levels=OptionButton.new(); levels.size_flags_horizontal=Control.SIZE_EXPAND_FILL
+	for i in 3: levels.add_item(game.Orders.definition(i).title)
+	level_row.add_child(levels)
+	action(level_row,"Поехать",func(): game.select_level(levels.selected))
 	action(room,"Новый заказ (хост)",game.request_restart)
 	room.add_child(label("WASD — ходьба · F — взять · E — работа\nV — голос · Esc — меню / отмена работы",16))
 	var graphics=section("Изображение")
@@ -94,10 +100,12 @@ func setup(owner_game: Node) -> void:
 	repair=RepairUI.new(); root.add_child(repair); repair.set_anchors_and_offsets_preset(Control.PRESET_FULL_RECT)
 	repair.action_sent.connect(game.local_repair_action)
 	repair.cancelled.connect(game.cancel_local_repair)
+	granny_dialog=load("res://scripts/granny_ui.gd").new(); root.add_child(granny_dialog)
+	granny_dialog.setup(game); granny_dialog.closed.connect(game.close_granny)
 
 func _process(_dt: float) -> void:
 	if not is_instance_valid(menu) or not is_instance_valid(repair): return
-	var playing=game.active and not menu.visible and not repair.visible
+	var playing=game.active and not menu.visible and not repair.visible and not granny_dialog.visible
 	status.get_parent().visible=playing
 	hint.get_parent().visible=playing
 	cross.visible=playing

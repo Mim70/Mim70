@@ -16,8 +16,8 @@ try {
         $outputText = Get-Content -Raw "$testLogs/$label.log"
         $errorText = Get-Content -Raw "$testLogs/$label.err"
         if ($errorText) { throw "$label errors: $errorText" }
-        if ($outputText -notmatch 'peak=4' -or $outputText -notmatch 'pipe=0.5' -or $outputText -notmatch 'voice=[1-9]' -or $outputText -notmatch 'valve=true') { throw "$label failed: $outputText" }
-        Write-Output "$label PASS: four peers, replicated job state, solved network minigame, voice packets"
+        if ($outputText -notmatch 'ragdoll=true' -or $outputText -notmatch 'peak=4' -or $outputText -notmatch 'pipe=0.5' -or $outputText -notmatch 'voice=[1-9]' -or $outputText -notmatch 'valve=true') { throw "$label failed: $outputText" }
+        Write-Output "$label PASS: four peers, replicated job state, solved network minigame, voice packets, replicated ragdoll"
     }
 } finally {
     foreach ($proc in $processes) { if (-not $proc.HasExited) { Stop-Process -Id $proc.Id } }
